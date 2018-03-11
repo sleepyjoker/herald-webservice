@@ -63,24 +63,41 @@ const decrypt = (key, value) => {
   return result
 }
 
+// 登录认证以及中间件 API useAuthCookie() 中使用的登录认证请求
 const auth = async (ctx, username, password) => {
-  // 调用东大 APP 统一身份认证
-  let res = await ctx.post(
-    'http://mobile4.seu.edu.cn/_ids_mobile/login18_9',
-    { username, password }
-  )
+  try {
+    // 调用东大 APP 统一身份认证
+    // 若需要修改此请求，请保证该请求符合以下两个条件：
+    // 1. 能获取到正确的统一身份认证 Cookie（一卡通等调用了 useAuthCookie() 的接口能正常使用）；
+    // 2. 若用户名或密码错误，能抛出 401 异常。
+    let res = await ctx.post(
+      'http://mobile4.seu.edu.cn/_ids_mobile/login18_9',
+      { username, password }
+    )
 
-  // 抓取 Cookie
-  let cookie = res.headers['set-cookie']
-  if (Array.isArray(cookie)) {
-    cookie = cookie.filter(k => k.indexOf('JSESSIONID') + 1)[0]
+    // 抓取 Cookie
+    let cookie = res.headers['set-cookie']
+    if (Array.isArray(cookie)) {
+      cookie = cookie.filter(k => k.indexOf('JSESSIONID') + 1)[0]
+    }
+    cookie = /(JSESSIONID=[0-9A-F]+)\s*[;$]/.exec(cookie)[1]
+
+    let url = 'http://www.seu.edu.cn'
+    let { cookieName, cookieValue } = JSON.parse(res.headers.ssocookie)[0]
+    ctx.cookieJar.setCookieSync(`${cookieName}=${cookieValue}; Domain=.seu.edu.cn`, url, {})
+    ctx.cookieJar.setCookieSync(`${cookie}; Domain=.seu.edu.cn`, url, {})
+  } catch (e) {
+    // 当统一身份认证请求抛出 401 时，认为登陆过期，删除用户表项并将 401 抛给用户
+    if (e.response && e.response.status === 401) {
+      if (ctx.user.isLogin) {
+        let { token } = ctx.user
+        await db.auth.remove({ tokenHash: token })
+      }
+      throw 401
+    } else {
+      throw e
+    }
   }
-  cookie = /(JSESSIONID=[0-9A-F]+)\s*[;$]/.exec(cookie)[1]
-
-  let url = 'http://www.seu.edu.cn'
-  let { cookieName, cookieValue } = JSON.parse(res.headers.ssocookie)[0]
-  ctx.cookieJar.setCookieSync(`${cookieName}=${cookieValue}; Domain=.seu.edu.cn`, url, {})
-  ctx.cookieJar.setCookieSync(`${cookie}; Domain=.seu.edu.cn`, url, {})
 }
 
 // 加密和解密过程
@@ -122,12 +139,15 @@ module.exports = async (ctx, next) => {
       throw '缺少参数 platform: 必须指定平台名'
     }
 
+    // 登录统一身份认证
+    // 一方面验证密码正确性，另一方面获得统一身份认证 Cookie 以便后续请求使用
     await auth(ctx, cardnum, password)
 
     // 获取用户附加信息（仅姓名和学号）
     // 对于本科生，此页面可显示用户信息；对于其他角色（研究生和教师），此页面重定向至老信息门户主页。
     // 但对于所有角色，无论是否重定向，右上角用户姓名都可抓取；又因为只有本科生需要通过查询的方式获取学号，
     // 研究生可直接通过一卡通号截取学号，教师则无学号，所以此页面可以满足所有角色信息抓取的要求。
+    // FIXME 老信息门户疑似下线
     res = await ctx.get('http://myold.seu.edu.cn/index.portal?.pn=p3447_p3449_p3450')
 
     // 解析姓名

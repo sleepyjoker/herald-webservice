@@ -1,7 +1,7 @@
 const db = require('sqlongo')('publicity')
 
 db.banner = {
-  bid:              'int primary key',
+  bid:              'integer primary key',
   title:            'text not null',    // 标题
   pic:              'text not null',    // 图片地址
   url:              'text not null',    // 链接地址
@@ -11,15 +11,14 @@ db.banner = {
 }
 
 db.notice = {
-  nid:              'int primary key',
+  nid:              'integer primary key',
   title:            'text not null',    // 标题
   content:          'text not null',    // 内容
-  url:              'text not null',    // 链接地址
-  schoolnumPrefix: 'text not null',     // 目标用户的学号前缀，可用于向某院/某系/某班/某人定向推送
+  publishTime:      'int not null'      // 发布时间
 }
 
 db.activity = {
-  aid:              'int primary key',
+  aid:              'integer primary key',
   title:            'text not null',    // 标题
   content:          'text not null',    // 内容
   pic:              'text not null',    // 图片地址

@@ -99,6 +99,9 @@ class CacheStrategy {
   }
 }
 
+// 当前脱离等待链的回源任务计数
+let detachedTaskCount = 0
+
 module.exports = async (ctx, next) => {
 
 /**
@@ -190,6 +193,7 @@ module.exports = async (ctx, next) => {
 
     // 异步的回源任务（执行下游中间件、路由处理程序）
     let task = async () => {
+
       // 回源前先将原有缓存重新设置一次，缓存内容保持不变，缓存时间改为现在
       // 因此，若用户在回源完成前重复调用同一接口，将直接命中缓存，防止重复触发回源
       if (strategy.cacheTimeSeconds) {
@@ -218,17 +222,29 @@ module.exports = async (ctx, next) => {
     }
 
     if (cacheNoAwait) {
-      // 懒抓取模式且有缓存时，脱离等待链异步回源，忽略回源结果，然后直接继续到第三步取上次缓存值
-      task().catch(() => {})
-    } else {
-      // 其余情况下，等待回源结束，若回源成功，返回回源结果，否则继续到第三步取上次缓存值
-      if (await task()) return
+      // 懒抓取模式且有过期缓存时，脱离等待链异步回源，忽略回源结果，然后直接继续到第三步取上次缓存值
+      detachedTaskCount++
+
+      // 异步回源首先 +1s 再进行，防止 ctx 对象在请求未处理完成前被回源线程修改
+      // 目前已知，不加这 1s 会导致懒抓取的 POST 请求在缓存过期触发回源时将会返回未包装的内容
+      setTimeout(() => {
+        task().catch(() => {}).then(() => detachedTaskCount--)
+      }, 1000)
+    } else if (await task()) { // 其余情况下，等待回源结束，若回源成功，返回回源结果
+      return
     }
   }
 
-  // 3. 执行到此表示缓存未过期或回源时出错
+  // 3. 执行到此表示缓存未过期、正在异步回源或回源时出错
   // 若缓存存在，返回缓存值；否则，必然有回源出错，此时不对结果进行覆盖，保留回源出错的信息
   if (cached) {
     ctx.body = cached
   }
 }
+
+// 可导入本模块之后取 detachedTaskCount 获得当前脱离等待链任务数
+Object.defineProperty(module.exports, 'detachedTaskCount', {
+  get () {
+    return detachedTaskCount
+  }
+})

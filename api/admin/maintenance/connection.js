@@ -1,5 +1,6 @@
 const counter = require('../../../middleware/counter')
 const spider = require('../../../middleware/spider_server')
+const redis = require('../../../middleware/redis')
 const startTime = new Date().getTime()
 
 exports.route = {
@@ -8,9 +9,9 @@ exports.route = {
       throw 403
     }
     let requestCount = counter.connections - 1 // 去掉当前请求自身
+    let detachedTaskCount = redis.detachedTaskCount
     let spiders = spider.spiders
-    let runTime = new Date().getTime() - startTime
-    return { requestCount, spiders, runTime }
+    return { requestCount, spiders, startTime, detachedTaskCount }
   },
   async post() {
     if (!this.admin.maintenance) {
