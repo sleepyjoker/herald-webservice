@@ -36,6 +36,7 @@ const reservationAPI = {
     method: 'post',
     args: ['cardNo']
     // FIXME 这里是不是可以由this.user得到？还是允许查别人的？
+    // 是根据一卡通可以获得一个同学的信息，然后返回他的userId之类的东西
     // args: [['cardNo', function (k) { return k.user }]]
   },
   newReservation: {
@@ -89,8 +90,7 @@ exports.route = {
                            .reduce((k, a) =>
                                    k + '&' + a[0] + '=' + a[1]
                                    , ''))))
-    // ws2 说结果是一个JSON
-    // 上游似乎坏了 没法验证
-    return JSON.parse(res.data)
+
+    return res.data
   }
 }

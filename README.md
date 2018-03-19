@@ -4,9 +4,7 @@
 
 ## 部署情况
 
-- 程序将部署在 api.myseu.cn；
-- Nginx 应配置为将 www.heraldstudio.com/ 转发到 api.myseu.cn/adapter-ws2/ 下；
-- Nginx 应配置为将 myseu.cn/（前端路径除外）转发到 api.myseu.cn/adapter-appserv/ 下；
+- 程序部署在 myseu.cn；
 
 ## 开发进度
 
@@ -39,7 +37,7 @@
   - [x] 人文讲座 @sleepyjoker
   - [x] 图书馆 @sleepyjoker
   - [x] 学校通知 @tusooa @MediosZ @rikumi
-  - [x] 场馆预约 @tusooa @Vigilans-Yea
+  - [x] 场馆预约 @Higuoxing @tusooa
   - [x] 实时班车 @rikumi
 
 3. **继承自 AppService**
@@ -416,7 +414,7 @@ GET /api => {
 **目前状态**
 
 1. 借助WebSocket实现，类似于分布代理，用于内网穿透和分流
-2. 中间件 `spider_server` 为其服务器部分，已实现功能包含：爬虫身份鉴权、请求打包、响应Promise化、CookieJar打包
+2. 中间件 `spider-server` 为其服务器部分，已实现功能包含：爬虫身份鉴权、请求打包、响应Promise化、CookieJar打包
 3. 与网络请求中间件 `axios` 进行了融合，在使用时透明化，不需要关注请求究竟在本地实现或是在分布爬虫实现
 4. 当分布爬虫访问出错时会自动从本地发起请求
 5. 可以通过 `config` 中 `spider.enable` 控制是否启用分布式功能
