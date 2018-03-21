@@ -43,11 +43,11 @@ if (process.env.NODE_ENV === 'development') {
 const cache = {
   async set(key, value) {
     let time = Math.floor(new Date().getTime() / 1000)
-    client.set(JSON.stringify(key), JSON.stringify({ value, time }))
+    client.set(key, JSON.stringify({ value, time }))
   },
   async get(key, ttl) {
     if (key && ttl) {
-      let got = JSON.parse(await client.getAsync(JSON.stringify(key)))
+      let got = JSON.parse(await client.getAsync(key))
       if (got) {
         let expired = Math.floor(new Date().getTime() / 1000) - got.time >= ttl
         return [got.value, expired]
@@ -160,12 +160,12 @@ module.exports = async (ctx, next) => {
     strategy.cacheTimeSeconds = 0
   }
 
-  let cacheKey = JSON.stringify({
-    method: ctx.method,
-    path: ctx.path,
-    token: cacheIsPrivate ? ctx.user.token : '',
-    params: ctx.params
-  })
+  let cacheKey = [
+    cacheIsPrivate ? ctx.user.token : '',
+    ctx.method,
+    ctx.path,
+    JSON.stringify(ctx.params)
+  ].join(' ').trim()
 
   let [cached, expired] = await cache.get(cacheKey, strategy.cacheTimeSeconds)
 

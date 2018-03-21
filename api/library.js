@@ -30,14 +30,14 @@ exports.route = {
     )
     let $ = cheerio.load(res.data)
     let bookList = $('#mylib_content tr').toArray().slice(1).map(tr => {
-      let [bookId, name, borrowDate, returnDate, renewDate, location, addition]
+      let [bookId, name, borrowDate, returnDate, renewCount, location, addition]
       = $(tr).find('td').toArray().map(td => {
         return $(td).text().trim()
       })
 
       let borrowId = $(tr).find('input').attr('onclick').substr(20,8)
 
-      return { bookId, name, borrowDate, returnDate, renewDate, location, addition, borrowId }
+      return { bookId, name, borrowDate, returnDate, renewCount, location, addition, borrowId }
     })
 
     return { bookList, cookies: this.cookieJar.cookieString() }
@@ -57,15 +57,13 @@ exports.route = {
       // 获取解析后的验证码和Cookies
       this.cookieJar.parse(cookies)
       let captcha = await this.libraryCaptcha()
-      let { captcha } = res
 
       res = await this.get(
         'http://www.libopac.seu.edu.cn:8080/reader/ajax_renew.php', {
           params: {
-            bar_code:bookId,
-            check:borrowId,
-            captcha:captcha,
-            time:time
+            bar_code: bookId,
+            check: borrowId,
+            captcha, time
           }
         }
       )
