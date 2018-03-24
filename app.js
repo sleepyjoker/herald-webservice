@@ -68,12 +68,16 @@ app.use(require('./middleware/axios'))
 app.use(require('./middleware/auth'))
 // 5. 管理员权限，需要依赖身份认证
 app.use(require('./middleware/admin'))
-// 6. redis 缓存，为路由处理程序提供自动缓存
+// 6. redis 缓存，为路由处理程序提供手动缓存
 app.use(require('./middleware/redis'))
 // 7. 生产环境下验证码识别
 if (process.env.NODE_ENV === 'production') {
   app.use(require('./middleware/captcha')({
     python: '/usr/local/bin/anaconda3/envs/captcha/bin/python'
+  }))
+} else {
+  app.use(require('./middleware/captcha')({
+    python: 'python3'
   }))
 }
 
@@ -81,16 +85,7 @@ if (process.env.NODE_ENV === 'production') {
   ## D. 路由层
   负责调用路由处理程序执行处理的中间件。
 */
-app.use(kf(module, {
-  ignore: [
-    '/middleware/**/*',
-    '/database/**/*',
-    '/docs/**/*',
-    '/sdk/**/*',
-    '/repl',
-    '/app',
-  ]
-}))
+app.use(kf())
 app.listen(config.port)
 
 // 开发环境下，启动 REPL
