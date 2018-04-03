@@ -1,4 +1,8 @@
 const cheerio = require('cheerio')
+const locations = {
+  37: '教一-111',
+  62: '教三-105'
+}
 
 exports.route = {
 
@@ -34,13 +38,20 @@ exports.route = {
         $ = cheerio.load(res.data)
         return $('.dangrichaxun tr').toArray().slice(1,-1).map(tr => {
           let td = $(tr).find('td')
-          let location = td.eq(-1).text()
+          let machineId = parseInt(td.eq(2).text().trim())
           let time = new Date(td.eq(0).text()).getTime()
-          return { time, location }
+          return { time, machineId }
         })
-      }))).reduce((a, b) => a.concat(b), []).filter(k =>
-        !/^(九龙湖|手持考|行政楼|网络中|机电大|校医院|研究生)/.test(k.location)
-      )
+      }))).reduce((a, b) => a.concat(b), [])
+        // 只保留讲座打卡记录
+        .filter(k => k.machineId in locations)
+        // 按时间倒序，然后去除相距1分钟以内的同一卡机重复打卡记录
+        .sort((a, b) => b.time - a.time)
+        .filter((k, i, arr) => i === 0
+          || arr[i - 1].machineId !== k.machineId
+          || Math.abs(arr[i - 1].time - k.time) > 60 * 1000)
+        // 转换为时间和地点名称
+        .map(k => ({ time: k.time, location: locations[k.machineId] }))
     })
   }
 }
