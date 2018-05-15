@@ -4,77 +4,64 @@ exports.route = {
 
   /**
   * GET /api/library
-  * @apiParam password
   * 图书馆信息查询
   **/
-  async get() {
+  async get({ password }) {
     return await this.userCache('1m+', async () => {
-      let { cardnum } = this.user
-      let password = this.params.password || this.user.password
-
-      // 获取解析后的验证码与Cookie并登陆
-      let captcha = await this.libraryCaptcha()
-
-      let log = await this.post(
-        'http://www.libopac.seu.edu.cn:8080/reader/redr_verify.php',
-        { number: cardnum, passwd: password, captcha: captcha, select: 'cert_no'}
-      )
-
-      // 判断是否登录成功
-      if (/密码错误/.test(log.data)) {
-        throw '密码错误，请重试'
-      }
+      await this.useAuthCookie()
+      await this.get('http://www.libopac.seu.edu.cn:8080/reader/hwthau.php')
 
       // 当前借阅
-      res = await this.get(
-        'http://www.libopac.seu.edu.cn:8080/reader/book_lst.php'
-      )
+      let res = await this.get('http://www.libopac.seu.edu.cn:8080/reader/book_lst.php')
       let $ = cheerio.load(res.data)
-      let bookList = $('#mylib_content tr').toArray().slice(1).map(tr => {
+      return $('#mylib_content tr').toArray().slice(1).map(tr => {
         let [bookId, name, borrowDate, returnDate, renewCount, location, addition]
-        = $(tr).find('td').toArray().map(td => {
-          return $(td).text().trim()
-        })
+          = $(tr).find('td').toArray().map(td => $(td).text().trim())
+        let borrowId = $(tr).find('input').attr('onclick').substr(20, 8)
 
-        let borrowId = $(tr).find('input').attr('onclick').substr(20,8)
+        // 合在一起的信息尽量分开；日期时间都转成时间戳；一定是数字的字段不要用字符串
+        let [bookName, author] = name.split(/\s*\/\s*/g)
+        name = bookName
+        author = author.replace(/编?著?$/, '')
+        borrowDate = +moment(borrowDate)
+        returnDate = +moment(returnDate)
+        renewCount = parseInt(renewCount)
 
-        return { bookId, name, borrowDate, returnDate, renewCount, location, addition, borrowId }
+        return { bookId, name, author, borrowDate, returnDate, renewCount, location, addition, borrowId }
       })
-
-      return {
-        bookList,
-        cookies: this.cookieJar.getCookieStringSync('http://www.libopac.seu.edu.cn')
-      }
     })
   },
 
   /**
   * POST /api/library
-  * @apiParam cookies
   * @apiParam bookId
-  * @apiParam borrowId
   * 图书续借
   **/
-    async post() {
-      let { cookies, bookId, borrowId } = this.params
-      let time = new Date().getTime()
+  async post({ bookId }) {
+    await this.useAuthCookie()
+    await this.get('http://www.libopac.seu.edu.cn:8080/reader/hwthau.php')
+    let res = await this.get('http://www.libopac.seu.edu.cn:8080/reader/book_lst.php')
+    let $ = cheerio.load(res.data)
 
-      // 获取解析后的验证码和Cookies
-      this.cookieJar.parse(cookies)
-      let captcha = await this.libraryCaptcha()
+    let bookList = $('#mylib_content tr').toArray().slice(1).map(tr => {
+      let bookId = $(tr).find('td').toArray().map(td => {
+        return $(td).text().trim()
+      })[0]
+      let borrowId = $(tr).find('input').attr('onclick').substr(20,8)
+      return { bookId, borrowId }
+    })
 
-      res = await this.get(
-        'http://www.libopac.seu.edu.cn:8080/reader/ajax_renew.php', {
-          params: {
-            bar_code: bookId,
-            check: borrowId,
-            captcha, time
-          }
-        }
-      )
-      let $ = cheerio.load(res.data)
+    let { borrowId } = bookList.find(k => k.bookId === bookId)
+    let captcha = await this.libraryCaptcha()
+    let time = +moment()
 
-      // 返回续借状态
-      return $.text()
-    }
+    res = await this.get('http://www.libopac.seu.edu.cn:8080/reader/ajax_renew.php', {
+      params: {
+        bar_code: bookId,
+        check: borrowId,
+        captcha, time
+      }
+    })
+    return cheerio.load(res.data).text()
+  }
 }

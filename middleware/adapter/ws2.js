@@ -1,546 +1,518 @@
-const db = require('../../database/adapter')
 const crypto = require('crypto')
 const { config } = require('../../app')
 const axios = require('axios')
 const cheerio = require('cheerio')
-
-Date.prototype.format = function (format) {
-  let o = {
-    'M+': this.getMonth() + 1, //月份
-    'd+': this.getDate(), //日
-    'h+': this.getHours() % 12 === 0 ? 12 : this.getHours() % 12, //小时
-    'H+': this.getHours(), //小时
-    'm+': this.getMinutes(), //分
-    's+': this.getSeconds(), //秒
-    'q+': Math.floor((this.getMonth() + 3) / 3), //季度
-    'S': this.getMilliseconds() //毫秒
-  }
-  let week = ['日', '一', '二', '三', '四', '五', '六']
-  if (/(y+)/.test(format)) {
-    format = format.replace(RegExp.$1, (this.getFullYear() + '').substr(4 - RegExp.$1.length))
-  }
-  if (/(E+)/.test(format)) {
-    format = format.replace(RegExp.$1, ((RegExp.$1.length > 1) ? (RegExp.$1.length > 2 ? '星期' : '周') : '') + week[this.getDay()])
-  }
-  for (let k in o) {
-    if (new RegExp('(' + k + ')').test(format)) {
-      format = format.replace(RegExp.$1, (RegExp.$1.length === 1) ? (o[k]) : (('00' + o[k]).substr(('' + o[k]).length)))
-    }
-  }
-  return format.replace(/N?aN/g, '')
-}
+const pubdb = require('../../database/publicity')
 
 module.exports = async (ctx, next) => {
+  if (ctx.path.indexOf('/adapter-ws2/') !== 0) {
+    return await next()
+  }
 
-  // 代替 herald_auth 中的 AuthHandler.py，只提供 auth，不提供 deauth
-  if (ctx.path === '/adapter-ws2/uc/auth') {
-    let { user, password } = ctx.params // 对 appid 容错
+  let originalPath = ctx.path
+  let originalMethod = ctx.method
+  try {
+    // 代替 herald_auth 中的 AuthHandler.py，只提供 auth，不提供 deauth
+    if (ctx.path === '/adapter-ws2/uc/auth') {
+      let { user, password } = ctx.params // 对 appid 容错
 
-    // 转换为对 ws3 auth 请求
-    ctx.path = '/auth'
-    ctx.params = { cardnum: user, password, platform: 'adapter-ws2' }
-    await next()
-
-    // 能执行到此处说明认证成功
-    // 取返回值中的 token
-    let token = ctx.body
-
-    // 首先在数据库中查找是否已有对应 uuid
-    // 如果已有，根据 ws2 行为应当优先保留已有的 uuid，更新其对应的 ws3 token
-    let existing = await db.auth.find({ cardnum: user }, 1)
-    if (existing) {
-      await db.auth.update({ cardnum: user }, { token })
-      ctx.body = existing.uuid
-    } else {
-      // 模仿 ws2 行为生成 20 字节（40 个十六进制字符）uuid，与 token 一起存入数据库
-      // 由于 ws2 本身就是无加密的，因此此处也只能无加密存储 token，无法提供进一步的隐私保护
-      // 因此各客户端应尽快升级对接 ws3 接口以提供安全的隐私保护
-      let uuid = new Buffer(crypto.randomBytes(20)).toString('hex')
-      await db.auth.insert({ uuid, cardnum: user, token, libPwd: '', libCookie: '' })
-      ctx.body = uuid
-    }
-    // 还原原始 path 以便上游中间件处理
-    ctx.path = '/adapter-ws2/uc/auth'
-
-  // 代替 herald_auth 中的 APIHandler.py，对 uuid 解析转换成 ws3 token
-  } else if (ctx.path.indexOf('/adapter-ws2/api/') === 0) {
-
-    let { uuid } = ctx.params
-    if (uuid) {
-      // 去除参数的 uuid，防止参数多变，污染 public redis 存储
-      delete ctx.params.uuid
-      if (!/^0+$/.test(uuid)) {
-        let existing = await db.auth.find({ uuid }, 1)
-        if (!existing) {
-          ctx.throw(401)
-        }
-
-        let { token } = existing
-
-        // 重写请求 headers，插入 token，以便 ws3 下游识别
-        ctx.request.headers.token = token
-      }
-    }
-
-    // 将路由转换成 /api/...，且为默认 GET 请求
-    let originalPath = ctx.path, originalMethod = ctx.method
-    ctx.path = ctx.request.path = ctx.path.replace('/adapter-ws2', '')
-    ctx.method = ctx.request.method = 'GET'
-
-    // 对应路由的转换操作
-    // 因为 next 只能调用一次，所以无法进行一对多的转换，ws2 的一个接口最多只能对应请求 ws3 的一个接口。
-
-    if (ctx.path === '/api/card') {
-
-      // 一卡通转换策略：timedelta 大于 1 时，只取昨天流水；小于或等于 1 或无参数时，只取当日流水。
-      let { timedelta } = ctx.params
-
-      if (timedelta && timedelta > 1) {
-        let yesterday = new Date(new Date().getTime() - 1000 * 60 * 60 * 24)
-        ctx.params.date = `${yesterday.getFullYear()}-${yesterday.getMonth() + 1}-${ yesterday.getDate() }`
+      // 根据头部特征识别具体平台
+      let { 'user-agent': ua, 'accept-language': lang } = ctx.request.headers
+      let platform = 'ws2'
+      if (!ua && lang) {
+        platform += '-ios'
+      } else if (/okhttp/i.test(ua)) {
+        platform += '-android'
+      } else if (/iphone/i.test(ua)) {
+        platform += '-mina-ios'
+      } else if (/android/i.test(ua)) {
+        platform += '-mina-android'
+      } else if (/devtools/i.test(ua)) {
+        platform += '-mina-devtools'
       }
 
+      // 转换为对 ws3 auth 请求
+      ctx.path = '/auth'
+      ctx.params = { cardnum: user, password, platform: 'ws2' }
       await next()
 
-      let { info, detail } = ctx.body
-      detail = (detail || []).map(k => {
-        return {
-          date: new Date(k.time).format('yyyy/MM/dd HH:mm:ss'),
-          price: k.amount.toString(),
-          type: '',
-          system: k.desc,
-          left: k.balance.toString()
-        }
-      })
+      // 代替 herald_auth 中的 APIHandler.py，对 uuid 解析转换成 ws3 token
+    } else if (ctx.path.indexOf('/adapter-ws2/api/') === 0) {
 
-      ctx.body = {
-        content: {
-          cardLeft: info.balance.toString(),
-          left: info.balance.toString(),
-          state: info.status,
-          detail, 'detial': detail
-        }, code: 200
-      }
-    } else if (ctx.path === '/api/curriculum') {
-      await next()
-      let content = {}, sidebar = []
-      let weekdays = 'Mon,Tue,Wed,Thu,Fri,Sat,Sun'.split(',')
-      weekdays.map(k => content[k] = [])
-      let { term, curriculum } = ctx.body
-      curriculum.map(k => {
-        if (!sidebar.find(j => j.lecturer === k.teacherName && j.course === k.courseName)) {
-          sidebar.push({
-            lecturer: k.teacherName,
-            course: k.courseName,
-            week: `${k.beginWeek}-${k.endWeek}`,
-            credit: k.credit.toString()
-          })
-        }
-        if (k.dayOfWeek) {
-          content[weekdays[k.dayOfWeek - 1]].push([
-            k.courseName,
-            `[${k.beginWeek}-${k.endWeek}周]${k.beginPeriod}-${k.endPeriod}节`,
-            `${{none:'',odd:'(单)',even:'(双)'}[k.flip]}${k.location}`
-          ])
-        }
-      })
-
-      let startDate = new Date(term.startDate)
-      content.startdate = {
-        month: startDate.getMonth(), // 从0开始
-        day: startDate.getDate()
+      let { uuid } = ctx.params
+      if (uuid) {
+        // 去除参数的 uuid，防止参数多变，污染 public redis 存储
+        delete ctx.params.uuid
+        ctx.request.headers.token = uuid
       }
 
-      ctx.body = { content, term: term.code, code: 200, sidebar }
+      // 将路由转换成 /api/...，且为默认 GET 请求
+      ctx.path = ctx.path.replace('/adapter-ws2', '')
+      ctx.method = 'GET'
 
-    } else if (ctx.path === '/api/sidebar') {
-      ctx.path = '/api/curriculum'
-      await next()
-      let sidebar = []
-      let weekdays = 'Mon,Tue,Wed,Thu,Fri,Sat,Sun'.split(',')
-      let { term, curriculum } = ctx.body
-      curriculum.map(k => {
-        if (!sidebar.find(j =>
+      // 对应路由的转换操作
+      // 因为 next 只能调用一次，所以无法进行一对多的转换，ws2 的一个接口最多只能对应请求 ws3 的一个接口。
+
+      if (ctx.path === '/api/card') {
+
+        // 一卡通转换策略：timedelta 大于 1 时，只取昨天流水；小于或等于 1 或无参数时，只取当日流水。
+        let { timedelta } = ctx.params
+
+        if (timedelta && timedelta > 1) {
+          ctx.params = { date: moment().subtract(1, 'days').format('YYYY-M-D') }
+        } else {
+          ctx.params = {}
+        }
+
+        await next()
+
+        let { info, detail } = ctx.body
+        detail = (detail || []).map(k => {
+          return {
+            date: moment(k.time).format('YYYY/MM/DD HH:mm:ss'),
+            price: k.amount.toString(),
+            type: '',
+            system: k.desc,
+            left: k.balance.toString()
+          }
+        })
+
+        ctx.body = {
+          content: {
+            cardLeft: info.balance.toString(),
+            left: info.balance.toString(),
+            state: info.status,
+            detail, 'detial': detail
+          }, code: 200
+        }
+      } else if (ctx.path === '/api/curriculum') {
+        await next()
+        let content = {}, sidebar = []
+        let weekdays = 'Mon,Tue,Wed,Thu,Fri,Sat,Sun'.split(',')
+        weekdays.map(k => content[k] = [])
+        let { term, curriculum } = ctx.body
+        curriculum.map(k => {
+          if (!sidebar.find(j => j.lecturer === k.teacherName && j.course === k.courseName)) {
+            sidebar.push({
+              lecturer: k.teacherName,
+              course: k.courseName,
+              week: `${k.beginWeek}-${k.endWeek}`,
+              credit: k.credit.toString()
+            })
+          }
+          if (k.dayOfWeek) {
+            content[weekdays[k.dayOfWeek - 1]].push([
+              k.courseName,
+              `[${k.beginWeek}-${k.endWeek}周]${k.beginPeriod}-${k.endPeriod}节`,
+              `${{ none: '', odd: '(单)', even: '(双)' }[k.flip]}${k.location}`
+            ])
+          }
+        })
+
+        let startDate = moment(term.startDate)
+        content.startdate = {
+          month: startDate.month(), // 从0开始
+          day: startDate.date()
+        }
+
+        ctx.body = { content, term: term.code, code: 200, sidebar }
+
+      } else if (ctx.path === '/api/sidebar') {
+        ctx.path = '/api/curriculum'
+        await next()
+        let sidebar = []
+        let weekdays = 'Mon,Tue,Wed,Thu,Fri,Sat,Sun'.split(',')
+        let { term, curriculum } = ctx.body
+        curriculum.map(k => {
+          if (!sidebar.find(j =>
             j.lecturer === k.teacherName
             && j.course === k.courseName
             && j.week === `${k.beginWeek}-${k.endWeek}`)) {
-          sidebar.push({
-            lecturer: k.teacherName,
-            course: k.courseName,
-            week: `${k.beginWeek}-${k.endWeek}`,
-            credit: k.credit.toString()
-          })
-        }
-      })
-
-      ctx.body = { content: sidebar, code: 200 }
-
-    } else if (ctx.path === '/api/emptyroom') {
-      // FIXME 空教室暂无法获取
-      ctx.body = { code: 400 }
-
-    } else if (ctx.path === '/api/exam') {
-      await next()
-      let content = ctx.body.map(k => {
-        return {
-          course: k.courseName,
-          type: k.courseType,
-          teacher: k.teacherName,
-          time: new Date(k.startTime).format('yyyy-M-d H:mm(E)'),
-          location: k.location,
-          hour: k.duration.toString()
-        }
-      })
-      ctx.body = { content, code: 200 }
-
-    } else if (ctx.path === '/api/gpa') {
-      await next()
-      let { gpa, gpaBeforeMakeup, calculationTime, detail } = ctx.body
-      let content = [
-        {
-          'calculate time': calculationTime ? new Date(calculationTime).format('yyyy-MM-dd HH:mm:ss') : '',
-          'gpa without revamp': gpaBeforeMakeup.toString(),
-          'gpa': gpa.toString()
-        }
-      ].concat(detail.map(k => k.courses.map(course => {
-        return {
-          name: course.courseName,
-          extra: course.courseType,
-          credit: course.credit.toString(),
-          semester: k.semester,
-          score: course.score,
-          type: course.scoreType
-        }
-      })).reduce((a, b) => a.concat(b), []))
-
-      ctx.body = { content, code: 200 }
-
-    } else if (ctx.path === '/api/jwc') {
-
-      // 教务通知转换策略：不提供「最新动态」，其他分类视 ws3 筛选条件而定，只保留筛选后有通知的分类
-
-      ctx.path = '/api/notice'
-      await next()
-
-      let content = {}
-      ctx.body.map(k => {
-        if (k.category !== '小猴通知') {
-          if (!content[k.category]) {
-            content[k.category] = []
+            sidebar.push({
+              lecturer: k.teacherName,
+              course: k.courseName,
+              week: `${k.beginWeek}-${k.endWeek}`,
+              credit: k.credit.toString()
+            })
           }
-          content[k.category].push({
-            date: new Date(k.time).format('yyyy-MM-dd'),
-            href: k.url,
-            title: k.title
-          })
-        }
-      })
-      ctx.body = { content, code: 200 }
-
-    } else if (ctx.path === '/api/lecture') {
-      await next()
-
-      let detail = ctx.body.map(k => {
-        return {
-          date: new Date(k.time).format('yyyy-MM-dd HH:mm:ss'),
-          place: k.location
-        }
-      })
-
-      ctx.body = { content: { count: detail.length, 'detial': detail }, code: 200 }
-
-    } else if (ctx.path === '/api/library') {
-      let { libPwd } = await db.auth.find({ uuid }, 1)
-      ctx.params.password = libPwd
-
-      try {
-        await next()
-      } catch (e) {
-        if (typeof e === 'string' && /密码错误/.test(e)) {
-          ctx.body = {
-            content: '密码错误',
-            code: 401
-          }
-          return
-        }
-      }
-
-      await db.auth.update({ uuid }, { libCookie: ctx.body.cookies })
-
-      let content = ctx.body.bookList.map(k => {
-        return {
-          barcode: k.bookId,
-          title: k.name,
-          author: '',
-          render_date: k.borrowDate,
-          due_date: k.returnDate,
-          renew_time: k.times,
-          place: k.place
-        }
-      })
-
-      ctx.body = { content, code: 200 }
-
-    } else if (ctx.path === '/api/renew') {
-      ctx.path = '/api/library'
-      let { barcode } = ctx.params
-      let { libCookie } = await db.auth.find({ uuid }, 1)
-
-      let res = await axios.create(config.axios).get(
-        'http://www.libopac.seu.edu.cn:8080/reader/book_lst.php',
-        {
-          headers: {
-            "Cookie" : libCookie
-          }
-        }
-      )
-      let $ = cheerio.load(res.data)
-      let bookList = $('#mylib_content tr').toArray().slice(1).map(tr => {
-        let bookId = $(tr).find('td').toArray().map(td => {
-          return $(td).text().trim()
-        })[0]
-
-        let borrowId = $(tr).find('input').attr('onclick').substr(20,8)
-
-        return { bookId, borrowId }
-      })
-
-      bookList.forEach( book => {
-        if(book['bookId'] === barcode) {
-          ctx.params = { cookies: libCookie, bookId: barcode, borrowId: book['borrowId']}
-        }
-      })
-      ctx.method = ctx.request.method = 'POST'
-      await next()
-      ctx.path = '/api/renew'
-
-      let content = ctx.body
-      if ( content === 'invalid call') {
-        ctx.body = { content:'fail', code:400 }
-      }else {
-        ctx.body = { content, code:200 }
-      }
-
-    } else if (ctx.path === '/api/nic') {
-      ctx.path = '/api/wlan'
-      await next()
-      let content = {
-        web: {
-          state: {
-            active: `已开通，${ctx.body.connections.length} 个在线`,
-            locked: '超额锁定',
-            inactive: '未开通'
-          }[ctx.body.state.service],
-          used: ctx.body.usage.used.replace(/^(\d+)/, '$1 ')
-        },
-        left: ctx.body.balance.toString()
-      }
-
-      ctx.body = { content, code: 200 }
-
-    } else if (ctx.path === '/api/pc') {
-      // 跑操预告不再提供
-      ctx.body = { content: 'refreshing', code: 201 }
-
-    } else if (ctx.path === '/api/pe') {
-
-      await next()
-      ctx.body = {
-        content: (ctx.body.count || 0).toString(),
-        remain: ctx.body.remainDays,
-        rank: '0',
-        code: 200
-      }
-
-    } else if (ctx.path === '/api/pedetail') {
-
-      ctx.path = '/api/pe'
-      await next()
-
-      ctx.body = {
-        content: ctx.body.detail.map(k => {
-          let date = new Date(k)
-          return {
-            sign_date: date.format('yyyy-MM-dd'),
-            sign_time: date.format('h.mm'),
-            sign_effect: '有效'
-          }
-        }),
-        code: 200
-      }
-
-    } else if (ctx.path === '/api/phylab') {
-
-      // 物理实验转换策略：与教务通知相似
-      await next()
-
-      let content = {
-        '基础性实验(上)': [],
-        '基础性实验(上)选做': [],
-        '基础性实验(下)': [],
-        '基础性实验(下)选做': [],
-        '文科及医学实验': [],
-        '文科及医学实验选做': []
-      }
-      ctx.body.map(k => {
-        if (!content[k.type]) {
-          content[k.type] = []
-        }
-        let date = new Date(k.startTime)
-        let day = '上午'
-        if (date.getHours() >= 12) {
-          day = '下午'
-        }
-        if (date.getHours() >= 18) {
-          day = '晚上'
-        }
-        content[k.type].push({
-          'name': k.labName,
-          // 本来括号里是第几周周几，但这里很难拿到第几周，前端也不用这个参数，就只写周几就好了
-          'Date': date.format('yyyy年M月d日（EE）'),
-          'Day': day,
-          'Teacher': k.teacherName,
-          'Address': k.location,
-          'Grade': k.score
         })
-      })
-      ctx.body = { content, code: 200 }
-    } else if (ctx.path === '/api/schoolbus') {
-      ctx.body = {
-        content: {
-          weekend: {
-            '前往地铁站': [
-              {time: '8:00-9:30', bus: '每 30min 一班'},
-              {time: '9:30-11:30', bus: '每 1h 一班'},
-              {time: '11:30-13:00', bus: '每 30min 一班'},
-              {time: '13:30-16:30', bus: '每 1h 一班'},
-              {time: '17:00-19:00', bus: '每 30min 一班'},
-              {time: '19:00-22:00', bus: '每 1h 一班'}
-            ],
-            '返回九龙湖': [
-              {time: '8:00-9:30', bus: '每 30min 一班'},
-              {time: '9:30-11:30', bus: '每 1h 一班'},
-              {time: '11:30-13:00', bus: '每 30min 一班'},
-              {time: '13:30-16:30', bus: '每 1h 一班'},
-              {time: '17:00-19:00', bus: '每 30min 一班'},
-              {time: '19:00-22:00', bus: '每 1h 一班'}
-            ]
-          },
-          weekday:{
-            '前往地铁站': [
-              {time: '7:10-10:00', bus: '每 10min 一班'},
-              {time: '10:00-11:30', bus: '每 30min 一班'},
-              {time: '11:30-13:30', bus: '每 10min 一班'},
-              {time: '13:30-15:00', bus: '13:30,14:00'},
-              {time: '15:00-15:50', bus: '每 10min 一班'},
-              {time: '16:00-17:00', bus: '16:00'},
-              {time: '17:00-18:30', bus: '每 10min 一班'},
-              {time: '18:30-22:00', bus: '每 30min 一班(20:30没有班车)'}
-            ],
-            '返回九龙湖': [
-              {time: '7:10-10:00', bus: '每 10min 一班'},
-              {time: '10:00-11:30', bus: '每 30min 一班'},
-              {time: '11:30-13:30', bus: '每 10min 一班'},
-              {time: '13:30-15:00', bus: '13:30,14:00'},
-              {time: '15:00-15:50', bus: '每 10min 一班'},
-              {time: '16:00-17:00', bus: '16:00'},
-              {time: '17:00-18:30', bus: '每 10min 一班'},
-              {time: '18:30-22:00', bus: '每 30min 一班(20:30没有班车)'}
-            ]
+
+        ctx.body = { content: sidebar, code: 200 }
+
+      } else if (ctx.path === '/api/emptyroom') {
+        // FIXME 空教室暂无法获取
+        ctx.body = { code: 400 }
+
+      } else if (ctx.path === '/api/exam') {
+        await next()
+        let content = ctx.body.map(k => {
+          return {
+            course: k.courseName,
+            type: k.courseType,
+            teacher: k.teacherName,
+            time: moment(k.startTime).format('YYYY-M-D H:mm(dddd)'),
+            location: k.location,
+            hour: k.duration.toString()
           }
-        },
-        code: 200
-      }
-    } else if (ctx.path === '/api/srtp') {
-      await next()
-      let { info, projects } = ctx.body
-      let content = [
-        {
-          score: info.grade,
-          total: info.points.toString(),
-          name: ctx.user.name,
-          'card number': ctx.user.schoolnum
+        })
+        ctx.body = { content, code: 200 }
+
+      } else if (ctx.path === '/api/gpa') {
+        await next()
+        let { gpa, gpaBeforeMakeup, calculationTime, score, credits, detail } = ctx.body
+        let content = (gpa ? [
+          {
+            'calculate time': calculationTime ? moment(calculationTime).format('YYYY-MM-DD HH:mm:ss') : '',
+            'gpa without revamp': gpaBeforeMakeup.toString(),
+            'gpa': gpa.toString()
+          }
+        ] : [ // 研究生暂时做个兼容
+            {
+              'calculate time': '',
+              'gpa without revamp': score.toString(),
+              'gpa': score.toString()
+            }
+          ]).concat(detail.map(k => k.courses.map(course => {
+            return {
+              name: course.courseName,
+              extra: course.courseType,
+              credit: course.credit.toString(),
+              semester: k.semester,
+              score: course.score,
+              type: course.scoreType
+            }
+          })).reduce((a, b) => a.concat(b), []))
+
+        ctx.body = { content, code: 200 }
+
+      } else if (ctx.path === '/api/jwc') {
+
+        // 教务通知转换策略：不提供「最新动态」，其他分类视 ws3 筛选条件而定，只保留筛选后有通知的分类
+
+        ctx.path = '/api/notice'
+        await next()
+
+        let content = {}
+        ctx.body.map(k => {
+          if (k.category !== '小猴通知') {
+            // App 只有名为「教务信息」的分类，才会显示在首页上
+            let category = k.category === '教务处 - 教务信息' ? '教务信息' : k.category
+            if (!content[category]) {
+              content[category] = []
+            }
+            content[category].push({
+              date: moment(k.time).format('YYYY-MM-DD'),
+              href: k.url,
+              title: k.title
+            })
+          }
+        })
+        ctx.body = { content, code: 200 }
+
+      } else if (ctx.path === '/api/lecture') {
+        await next()
+
+        let detail = ctx.body.map(k => {
+          return {
+            date: moment(k.time).format('YYYY-MM-DD HH:mm:ss'),
+            place: k.location
+          }
+        })
+
+        ctx.body = { content: { count: detail.length, 'detial': detail }, code: 200 }
+
+      } else if (ctx.path === '/api/library') {
+
+        await next()
+        let content = ctx.body.map(k => {
+          return {
+            barcode: k.bookId,
+            title: k.name,
+            author: k.author,
+            render_date: moment(k.borrowDate).format('YYYY-MM-DD'),
+            due_date: moment(k.returnDate).format('YYYY-MM-DD'),
+            renew_time: k.renewCount,
+            place: k.location
+          }
+        })
+
+        ctx.body = { content, code: 200 }
+
+      } else if (ctx.path === '/api/renew') {
+        let { barcode: bookId } = ctx.params
+        ctx.params = { bookId }
+
+        ctx.path = '/api/library'
+        ctx.method = 'POST'
+        await next()
+
+        let content = ctx.body
+        if (content === 'invalid call') {
+          ctx.body = { content: 'fail', code: 400 }
+        } else {
+          ctx.body = { content, code: 200 }
         }
-      ].concat(projects.map(k => {
-        return {
-          credit: k.credit.toString(),
-          proportion: k.proportion.toString(),
-          project: k.project,
-          department: k.department,
-          date: k.date,
-          type: k.type,
-          'total credit': k.total.toString()
+      } else if (ctx.path === '/api/nic') {
+        ctx.path = '/api/wlan'
+        await next()
+        let content = {
+          web: {
+            state: {
+              active: `已开通，${ctx.body.connections.length} 个在线`,
+              locked: '超额锁定',
+              inactive: '未开通'
+            }[ctx.body.state.service],
+            used: ctx.body.usage.used.replace(/^(\d+)/, '$1 ')
+          },
+          left: ctx.body.balance.toString()
         }
-      }))
 
-      ctx.body = { content, code: 200 }
+        ctx.body = { content, code: 200 }
 
-    } else if (ctx.path === '/api/term') {
-      await next()
-      let content = ctx.body.sort((a, b) => b.current - a.current).map(k => k.name)
-      ctx.body = { content, code: 200 }
+      } else if (ctx.path === '/api/pc') {
+        // 跑操预告不再提供
+        ctx.body = { content: 'refreshing', code: 201 }
 
-    } else if (ctx.path === '/api/user') {
-      await next()
-      let content = {
-        sex: ctx.body.gender,
-        cardnum: ctx.body.cardnum,
-        name: ctx.body.name,
-        schoolnum: ctx.body.schoolnum
+      } else if (ctx.path === '/api/pe') {
+
+        await next()
+        ctx.body = {
+          content: (ctx.body.count || 0).toString(),
+          remain: ctx.body.remainDays,
+          rank: '0',
+          code: 200
+        }
+
+      } else if (ctx.path === '/api/pedetail') {
+
+        ctx.path = '/api/pe'
+        await next()
+
+        ctx.body = {
+          content: ctx.body.detail.map(k => {
+            let date = moment(k)
+            return {
+              sign_date: date.format('YYYY-MM-DD'),
+              sign_time: date.format('H.mm'),
+              sign_effect: '有效'
+            }
+          }),
+          code: 200
+        }
+
+      } else if (ctx.path === '/api/phylab') {
+
+        // 物理实验转换策略：与教务通知相似
+        await next()
+
+        let content = {
+          '基础性实验(上)': [],
+          '基础性实验(上)选做': [],
+          '基础性实验(下)': [],
+          '基础性实验(下)选做': [],
+          '文科及医学实验': [],
+          '文科及医学实验选做': []
+        }
+        ctx.body.map(k => {
+          if (!content[k.type]) {
+            content[k.type] = []
+          }
+          let date = moment(k.startTime)
+          let day = '上午'
+          if (date.hour() >= 12) {
+            day = '下午'
+          }
+          if (date.hour() >= 18) {
+            day = '晚上'
+          }
+          content[k.type].push({
+            'name': k.labName,
+            // 本来括号里是第几周周几，但这里很难拿到第几周，前端也不用这个参数，就只写周几就好了
+            'Date': date.format('YYYY年M月D日（ddd）'),
+            'Day': day,
+            'Teacher': k.teacherName,
+            'Address': k.location,
+            'Grade': k.score
+          })
+        })
+        ctx.body = { content, code: 200 }
+      } else if (ctx.path === '/api/schoolbus') {
+        ctx.body = {
+          content: {
+            weekend: {
+              '前往地铁站': [
+                { time: '8:00-9:30', bus: '每 30min 一班' },
+                { time: '9:30-11:30', bus: '每 1h 一班' },
+                { time: '11:30-13:00', bus: '每 30min 一班' },
+                { time: '13:30-16:30', bus: '每 1h 一班' },
+                { time: '17:00-19:00', bus: '每 30min 一班' },
+                { time: '19:00-22:00', bus: '每 1h 一班' }
+              ],
+              '返回九龙湖': [
+                { time: '8:00-9:30', bus: '每 30min 一班' },
+                { time: '9:30-11:30', bus: '每 1h 一班' },
+                { time: '11:30-13:00', bus: '每 30min 一班' },
+                { time: '13:30-16:30', bus: '每 1h 一班' },
+                { time: '17:00-19:00', bus: '每 30min 一班' },
+                { time: '19:00-22:00', bus: '每 1h 一班' }
+              ]
+            },
+            weekday: {
+              '前往地铁站': [
+                { time: '7:10-10:00', bus: '每 10min 一班' },
+                { time: '10:00-11:30', bus: '每 30min 一班' },
+                { time: '11:30-13:30', bus: '每 10min 一班' },
+                { time: '13:30-15:00', bus: '13:30,14:00' },
+                { time: '15:00-15:50', bus: '每 10min 一班' },
+                { time: '16:00-17:00', bus: '16:00' },
+                { time: '17:00-18:30', bus: '每 10min 一班' },
+                { time: '18:30-22:00', bus: '每 30min 一班(20:30没有班车)' }
+              ],
+              '返回九龙湖': [
+                { time: '7:10-10:00', bus: '每 10min 一班' },
+                { time: '10:00-11:30', bus: '每 30min 一班' },
+                { time: '11:30-13:30', bus: '每 10min 一班' },
+                { time: '13:30-15:00', bus: '13:30,14:00' },
+                { time: '15:00-15:50', bus: '每 10min 一班' },
+                { time: '16:00-17:00', bus: '16:00' },
+                { time: '17:00-18:30', bus: '每 10min 一班' },
+                { time: '18:30-22:00', bus: '每 30min 一班(20:30没有班车)' }
+              ]
+            }
+          },
+          code: 200
+        }
+      } else if (ctx.path === '/api/srtp') {
+        await next()
+        let { info, projects } = ctx.body
+        let content = [
+          {
+            score: info.grade,
+            total: info.points.toString(),
+            name: ctx.user.name,
+            'card number': ctx.user.schoolnum
+          }
+        ].concat(projects.map(k => {
+          return {
+            credit: k.credit.toString(),
+            proportion: k.proportion.toString(),
+            project: k.project,
+            department: k.department,
+            date: k.date,
+            type: k.type,
+            'total credit': k.total.toString()
+          }
+        }))
+
+        ctx.body = { content, code: 200 }
+
+      } else if (ctx.path === '/api/term') {
+        await next()
+        let content = ctx.body.sort((a, b) => b.current - a.current).map(k => k.name)
+        ctx.body = { content, code: 200 }
+
+      } else if (ctx.path === '/api/user') {
+        await next()
+        let { cardnum, name, schoolnum, gender: sex } = ctx.body
+
+        // 由于老 App 要求，用户必须学号为八位才能登录成功
+        // 因此对于研究生和教师，改为取一卡通后八位为学号
+        if (!/^21/.test(cardnum)) {
+          schoolnum = cardnum.slice(-8)
+        }
+        let content = {
+          sex, cardnum, name, schoolnum
+        }
+        ctx.body = { content, code: 200 }
+      } else if (ctx.path === '/api/yuyue') {
+        ctx.path = '/api/reservation'
+        ctx.method = 'GET'
+        await next()
+        ctx.body = {
+          content: ctx.body,
+          code: 200
+        }
+      } else if (ctx.path === '/api/library_hot') {
+        ctx.body = { content: [], code: 200 }
       }
-      ctx.body = { content, code: 200 }
+    } else if (ctx.path === '/adapter-ws2/click') {
+      // 此处有大段解释，见 appserv.js:83
+      // 续：这个请求是用于兼容老 App 的 WebView 点击，是浏览器发起的请求，没有登录态（headers 中没有 token）
+      // 但因为轮播和活动的 adapter 路由中在 URL 中带了 [uuid] 控制指令，强制 App 传入 uuid
+      // 作为参数（WS2 uuid 即为 WS3 token），因此可以在这个请求的 URL 参数中拿到用户的 token
+      let { aid, bid, token } = ctx.query
 
-    } else if (ctx.path === '/api/yuyue') {
-      ctx.path = '/api/reservation'
+      // 更旧版本的 App 不能识别 [uuid] 控制指令，会把 [uuid] 原样传回来；另外未登录态下，老 App 的 uuid 为全零
+      // 这两种情况都要排除（保留非登录态），其余情况加上登录态
+      if (/^[0-9A-Za-z]+$/.test(token) && !/^0+$/.test(token)) {
+        // auth 中间件在 adapter 的下游，可以通过复写头部，强行加上登录态
+        ctx.request.headers = { token }
+      }
+
+      // 无论是否有登录态都要做重定向
+      if (aid) { // 点击活动
+        ctx.path = '/api/activity'
+      } else { // 点击轮播图
+        ctx.path = '/api/banner'
+      }
+      ctx.method = 'PUT'
+
+      // 下游是 WS3 PUT 请求，会进行统计记录，并返回目标链接，这里为了兼容，帮 App 做重定向
       await next()
+      return ctx.redirect(ctx.body)
+    } else if (ctx.path === '/adapter-ws2/herald/api/v1/huodong/get') {
+      let { page = 1, type } = ctx.query
+      if (type === 'hot') {
+        ctx.body = { content: [], code: 200 }
+      } else {
+        let acts = await pubdb.activity.find({ admittedBy: { $ne: '' }}, 10, (page - 1) * 10, 'startTime-')
+        ctx.body = {
+          content: acts.map(k => {
+            let startTime = moment(k.startTime).format('YYYY-M-D')
+
+            // 截止时间减去1毫秒，使得0点的回到前一天23:59，防止误导
+            let endTime = moment(k.endTime - 1).format('YYYY-M-D')
+            return {
+              title: k.title,
+              introduction: k.content,
+              start_time: startTime,
+              end_time: endTime,
+              activity_time: startTime === endTime ? startTime : startTime + '~' + endTime,
+
+              // 此处有大段解释，见 appserv.js:83
+              detail_url: k.url && `https://myseu.cn/ws3/adapter-ws2/click?aid=${k.aid}&token=[uuid]`,
+              pic_url: k.pic,
+              association: '校园活动',
+              location: '…'
+            }
+          }),
+          code: 200
+        }
+      }
+    } else if (ctx.path === '/adapter-ws2/wechat2/lecture') {
       ctx.body = {
-        content: ctx.body,
+        content: [],
         code: 200
       }
-    } else if (ctx.path === '/api/library_hot') {
-      ctx.body = { content: [], code: 200 }
+    } else if (ctx.path === '/adapter-ws2/queryEmptyClassrooms/m') {
+      ctx.redirect('http://map.seu.edu.cn/#/freeClassroom')
+    } else if (ctx.path === '/adapter-ws2/static/images/xiaoli.jpg') {
+      ctx.path = '/api/schedule'
+      await next()
+      ctx.redirect(ctx.body)
+    } else {
+      await next()
     }
-
-    // 还原原始 path 和 method 以便上游中间件处理
+  } catch (e) {
+    if (e instanceof Error) {
+      console.trace(e)
+    }
+    ctx.body = {
+      code: typeof e === 'number' ? e : 400
+    }
+  } finally {
     ctx.path = originalPath
     ctx.method = originalMethod
-  } else if (ctx.path === '/adapter-ws2/herald/api/v1/huodong/get') {
-    let originalPath = ctx.path
-    let { page, type } = ctx.query
-    if (type === 'hot') {
-      ctx.body = { content: [], code: 200 }
-    } else {
-      ctx.params = { page }
-      ctx.path = '/api/activity'
-      await next()
-      ctx.path = originalPath
-      ctx.body = {
-        content: ctx.body.map(k => {
-          let startTime = new Date(k.startTime).format('yyyy-M-d')
-          let endTime = new Date(k.endTime).format('yyyy-M-d')
-          return {
-            title: k.title,
-            introduction: k.content,
-            start_time: startTime,
-            end_time: endTime,
-            activity_time: startTime + '~' + endTime,
-            detail_url: k.url,
-            pic_url: k.pic,
-            association: '校园活动',
-            location: '查看详情'
-          }
-        }),
-        code: 200
-      }
-    }
-  } else if (ctx.path === '/adapter-ws2/wechat2/lecture') {
-    ctx.body = {
-      content: [],
-      code: 200
-    }
-  } else if (ctx.path === '/adapter-ws2/queryEmptyClassrooms/m') {
-    ctx.redirect('http://map.seu.edu.cn/#/freeClassroom')
-  } else {
-    await next()
+    ctx.status = ctx.body && ctx.body.code || 200
   }
 }

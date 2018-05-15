@@ -4,14 +4,20 @@
 
 const ws = require('ws')
 const net = require('net')
-const {config} = require('../app')
+const { config } = require('../app')
 const chardet = require('chardet')
-const axios = require('axios');
+const axios = require('axios')
 const tough = require('tough-cookie')
 const chalk = require('chalk')
 const sms = require('../sdk/yunpian')
 const slackMessage = require('./slack').SlackMessage
-
+const spiderSecret = (() => {
+  try {
+    return require('./spider-secret.json')
+  } catch (e) {
+    return {}
+  }
+})()
 
 // errcode定义
 const NO_SPIDER_ERROR = 0 // 没有可用在线爬虫
@@ -79,23 +85,41 @@ class SpiderServer {
     connection.send(JSON.stringify(message))
 
     // 来自硬件爬虫数据的处理
-    connection.on('message', (data) => {
+    connection.on('message', async data => {
       // 有数据返回时即更新心跳时间戳
-      let date = new Date()
-      connection.finalHeartBeat = date.getTime()
+      connection.finalHeartBeat = +moment()
       // 如果是心跳包则拦截
       if (data === '@herald—spider') {
-        connection.send('@herald-server'); // 双向心跳包
+        connection.send('@herald-server') // 双向心跳包
         return
       }
       if (connection.active) {
         this.handleResponse(data)
       } else {
-        //使用控制台token认证的部分
-        let secret = JSON.parse(data).secret;
-        if (token === connection.token) {
+        // token 认证的部分
+        let { token } = JSON.parse(data)
+
+        // 老版密令主动认证
+        if (token in spiderSecret) {
           this.acceptSpider(connection)
-        } else {
+          console.log(`爬虫 ${connection.spiderName} 主动认证成功`)
+          new slackMessage().send(`爬虫 ${connection.spiderName} 主动认证成功，身份标识 ${spiderSecret[token]}`)
+        }
+        
+        // 新版运维登录 token 认证
+        else try {
+          let res = await axios.get(`http://localhost:${config.port}/api/admin/admin`, {
+            headers: { token }
+          })
+          if (res.data.result.maintenance) {
+            let name = res.data.result.maintenance.name
+            this.acceptSpider(connection)
+            console.log(`爬虫 ${connection.spiderName} 运维认证成功，操作者${name}`)
+            new slackMessage().send(`爬虫 ${connection.spiderName} 运维认证成功，操作者${name}`)
+          } else {
+            this.rejectSpider(connection)
+          }
+        } catch (e) {
           this.rejectSpider(connection)
         }
       }
@@ -211,7 +235,7 @@ class SpiderServer {
         let spider = this.pickSpider()
         spider.send(encodedRequest)
       } catch (e) {
-        console.log('[-] 向硬件爬虫发送请求数据期间出错：' + e.message)
+        // console.log('[-] 向硬件爬虫发送请求数据期间出错：' + e.message)
         e.errCode = WEBSOCKET_TRASFER_ERROR
         reject(e)
         clearTimeout(this.requestPool[name].timeout)
@@ -255,8 +279,7 @@ class SpiderServer {
   }
 
   getAvailableSpiders() {
-    let timestamp = new Date()
-    timestamp = timestamp.getTime()
+    let timestamp = +moment()
     let availableList = []
     for (let name in this.connectionPool) {
       let heartCycle = timestamp - this.connectionPool[name].finalHeartBeat

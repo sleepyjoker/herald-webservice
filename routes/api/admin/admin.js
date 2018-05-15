@@ -7,12 +7,13 @@ exports.route = {
   * 查询管理员二合一接口
   * 带 domain 参数表示查询指定域下的管理员；不带 domain 参数表示查询自己的管理员身份
   */
-  async get () {
-    let { domain } = this.params
+  async get ({ domain }) {
     if (!domain) {
-      if (!this.admin.super && !this.user.isLogin) {
+      if (!(this.admin && this.admin.super) && !this.user.isLogin) {
         throw 401
       }
+      this.body = ''
+      this.status = 200
       return this.admin
     } else {
       // 只允许当前域中的管理员和超级管理员查看当前域中的管理员
@@ -32,8 +33,7 @@ exports.route = {
   * 任命管理员
   * apiParam { domain, admin: { name, cardnum, phone } }
   */
-  async post() {
-    let { domain, admin } = this.params
+  async post({ domain, admin }) {
     let { name, cardnum, phone } = admin
 
     // 只允许同域任命
@@ -46,7 +46,7 @@ exports.route = {
       throw '管理员已存在'
     }
 
-    let now = new Date().getTime()
+    let now = +moment()
     await db.admin.insert({
       cardnum, name, phone, domain,
       level: this.admin[domain].level + 1,
@@ -61,8 +61,7 @@ exports.route = {
   * 修改管理员信息
   * apiParam { domain, admin }
   */
-  async put() {
-    let { domain, admin } = this.params
+  async put({ domain, admin }) {
 
     // 只允许同域任免
     if (!this.admin[domain]) {
@@ -85,8 +84,7 @@ exports.route = {
   * 删除管理员
   * apiParam { domain, cardnum }
   */
-  async delete() {
-    let { domain, cardnum } = this.params
+  async delete({ domain, cardnum }) {
 
     // 只允许同域任免
     if (!this.admin[domain]) {

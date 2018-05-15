@@ -3,7 +3,6 @@
 
   按照一定的规则，规范返回格式，将 HTTP Status Code 下放到 JSON 中，使 HTTP Status Code 保持为 200。
  */
-
 module.exports = async (ctx, next) => {
 
   // 不要使用这个对流程控制具有迷惑性的 API，请直接用 throw 代替
@@ -27,14 +26,15 @@ module.exports = async (ctx, next) => {
       && /^timeout of \d+ms exceeded$/.test(e.message)) { // 探测 Axios 异常
       ctx.status = 408
     } else {
-      console.error(e)
+      console.trace(e)
       ctx.status = 400
     }
   }
 
   let json = {}
 
-  if (ctx.status === 302) {
+  if (ctx.response.get('Location')) {
+    ctx.status = 302
     return
   } else if (ctx.status < 400) {
     json = {
@@ -60,7 +60,7 @@ module.exports = async (ctx, next) => {
       } else if (ctx.status === 403) {
         json.reason = '权限不允许'
       } else if (ctx.status === 404) {
-        json.reason = '接口不存在'
+        json.reason = '内容不存在'
       } else if (ctx.status === 405) {
         json.reason = '调用方式不正确'
       } else if (ctx.status === 408) {

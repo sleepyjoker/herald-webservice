@@ -2,12 +2,12 @@ const db = require('../../../../database/auth')
 
 exports.route = {
   async get() {
-    if (!this.admin.maintenance) {
+    if (!this.admin || !this.admin.maintenance) {
       throw 403
     }
 
-    let yesterday = new Date().getTime() - 1000 * 60 * 60 * 24
-    let lastMonth = new Date().getTime() - 1000 * 60 * 60 * 24 * 30
+    let yesterday = +moment().subtract(1, 'day')
+    let lastMonth = +moment().subtract(1, 'month')
 
     // 并行查询
     let [
@@ -44,7 +44,7 @@ exports.route = {
           userCount, realUserCount, dailyRegister,
           dailyInvoke, monthlyRegister, monthlyInvoke
         }
-      }))).sort((a, b) => b.userCount - a.userCount)
+      }))).sort((a, b) => b.realUserCount - a.realUserCount)
     }
   }
 }

@@ -10,6 +10,13 @@
   ctx.user.token      from auth.js
   ctx.user.encrypt    from auth.js
   ctx.user.decrypt    from auth.js
+
+  ## 提供接口
+
+  ctx.userCache       async (...string, string, async () => any) => any
+  ctx.publicCache     async (...string, string, async () => any) => any
+  ctx.clearUserCache  async () => undefined
+  ctx.clearAllCache   async () => undefined
  */
 let client
 
@@ -37,6 +44,9 @@ if (process.env.NODE_ENV === 'development') {
       let value = pool[key] || 'null'
       console.log('dev-fake-redis [get]', chalk.cyan(key), summarize(value, 32))
       return value
+    },
+    batchDelete (keyword) {
+      Object.keys(pool).filter(k => ~k.indexOf(keyword)).map(k => { delete pool[key] })
     }
   }
 } else {
@@ -45,6 +55,9 @@ if (process.env.NODE_ENV === 'development') {
   bluebird.promisifyAll(redis.RedisClient.prototype)
 
   client = redis.createClient()
+  client.batchDelete = async (keyword) => {
+    await client.evalAsync(`for _,k in ipairs(redis.call('keys','*${keyword}*')) do redis.call('del',k) end`, '0')
+  }
 }
 
 /**
@@ -57,14 +70,14 @@ if (process.env.NODE_ENV === 'development') {
  */
 const cache = {
   async set(key, value) {
-    let time = Math.floor(new Date().getTime() / 1000)
+    let time = +moment().unix()
     client.set(key, JSON.stringify({ value, time }))
   },
   async get(key, ttl) {
     if (key && ttl) {
       let got = JSON.parse(await client.getAsync(key))
       if (got) {
-        let expired = Math.floor(new Date().getTime() / 1000) - got.time >= ttl
+        let expired = +moment().unix() - got.time >= ttl
         return [got.value, expired]
       }
     }
@@ -150,7 +163,7 @@ async function internalCached (isPublic, ...args) {
   let isPrivate = !isPublic && this.user.isLogin
 
   // 对于超管，强制禁用任何缓存机制（否则由于超管不是用户，会被当做游客进行缓存，造成严重影响）
-  if (this.admin.super) {
+  if (this.admin && this.admin.super) {
     seconds = 0
   }
 
@@ -194,6 +207,10 @@ async function internalCached (isPublic, ...args) {
           detachedTaskCount++
           let task = func()
           if (allowObsolete) {
+
+            // 若允许过期缓存，则将回源任务限制在3秒之内
+            // 把超时归类为异常，然后统一在异常情况下返回缓存
+            // 这样处理同时也使得回源函数中出现异常时，同样也返回缓存
             task = Promise.race([
               task, new Promise((_, r) => setTimeout(r, 3000))
             ]).catch(e => cached)
@@ -217,12 +234,13 @@ async function internalCached (isPublic, ...args) {
           detachedTaskCount--
         }
       })()
-    } // 否则，之前已经在异步回源了，不管它
+    }
 
+    // 等待该回源任务完成
     return await curJob
   }
 
-  // 3. 执行到此表示缓存未过期或(缓存存在但过期时)正在异步回源
+  // 3. 执行到此表示缓存未过期，返回缓存
   return cached
 }
 
@@ -232,6 +250,19 @@ let detachedTaskCount = 0
 module.exports = async (ctx, next) => {
   ctx.userCache = internalCached.bind(ctx, false)
   ctx.publicCache = internalCached.bind(ctx, true)
+
+  // 清空当前用户缓存
+  ctx.clearUserCache = async () => {
+    let { token } = ctx.user
+    await client.batchDelete(token)
+  }
+
+  // 清空所有 key 中包含某字符串的缓存，例如 clearCache('GET /api/gpa')；留空则清空所有缓存
+  // 应当仅允许对管理员使用该 API
+  ctx.clearAllCache = async (keyword = '') => {
+    await client.batchDelete(keyword)
+  }
+
   await next()
 }
 

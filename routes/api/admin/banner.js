@@ -1,34 +1,36 @@
 const db = require('../../../database/publicity')
 
 exports.route = {
-  async get () {
-    if (!this.admin.publicity) {
+  async get ({ page = 1, pagesize = 10 }) {
+    if (!this.admin || !this.admin.publicity) {
       throw 403
     }
-    return (await db.banner.find()).sort((a, b) => b.startTime - a.startTime)
+    return await Promise.all((await db.banner.find({}, pagesize, (page - 1) * pagesize, 'startTime-'))
+      .map(async k => {
+        k.clicks = await db.bannerClick.count({ bid: k.bid })
+        return k
+      }))
   },
-  async post () {
-    if (!this.admin.publicity) {
+  async post ({ banner }) {
+    if (!this.admin || !this.admin.publicity) {
       throw 403
     }
-    let { banner } = this.params
     await db.banner.insert(banner)
     return 'OK'
   },
-  async put () {
-    if (!this.admin.publicity) {
+  async put ({ banner }) {
+    if (!this.admin || !this.admin.publicity) {
       throw 403
     }
-    let { banner } = this.params
     await db.banner.update({ bid: banner.bid }, banner)
     return 'OK'
   },
-  async delete () {
-    if (!this.admin.publicity) {
+  async delete ({ bid }) {
+    if (!this.admin || !this.admin.publicity) {
       throw 403
     }
-    let { bid } = this.params
     await db.banner.remove({ bid })
+    await db.bannerClick.remove({ bid })
     return 'OK'
   }
 }

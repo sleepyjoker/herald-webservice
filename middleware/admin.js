@@ -7,12 +7,16 @@ const db = require('../database/admin')
 const superToken = new Buffer(crypto.randomBytes(16)).toString('hex')
 console.log('本次会话的超级管理员 Token 为：' + chalk.blue(superToken) + '，请妥善保管')
 
+// ctx.admin API
+// 对于非管理员，ctx.admin 为 null
+// 对于普通管理员，ctx.admin 为包含所有自己所属的管理员域键为成真值的对象
+// 对于超级管理员，ctx.admin 为包含所有管理员域键为成真值的对象，且 super 键也为 true
 module.exports = async (ctx, next) => {
 
   // 中间件处理，允许下游查询当前用户的权限
-  ctx.admin = { super: false }
+  ctx.admin = null
   if (ctx.request.headers.token === superToken) {
-    ctx.admin.super = true
+    ctx.admin = { super: true }
     let domains = await db.domain.find()
     for (let domain of domains) {
       ctx.admin[domain.domain] = {
@@ -29,6 +33,9 @@ module.exports = async (ctx, next) => {
     let { cardnum } = ctx.user
     let admins = await db.admin.find({ cardnum })
     for (let admin of admins) {
+      if (!ctx.admin) {
+        ctx.admin = {}
+      }
       let domain = admin.domain
       let domainInfo = await db.domain.find({ domain }, 1)
       admin.domain = domainInfo.name
@@ -37,20 +44,22 @@ module.exports = async (ctx, next) => {
     }
 
     // 利用 Proxy 机制，每当 get 某个 domain 权限时，自动更新数据库中的调用时间
-    ctx.admin = new Proxy(ctx.admin, {
-      set(target, key, value) {
-        target[key] = value
-        return true
-      },
-      get(target, key) {
-        if (target[key]) {
-          let now = new Date().getTime()
-          let domain = key
-          db.admin.update({ cardnum, domain }, { lastUsed: now })
+    if (ctx.admin) {
+      ctx.admin = new Proxy(ctx.admin, {
+        set(target, key, value) {
+          target[key] = value
+          return true
+        },
+        get(target, key) {
+          if (target[key]) {
+            let now = +moment()
+            let domain = key
+            db.admin.update({ cardnum, domain }, { lastUsed: now })
+          }
+          return target[key]
         }
-        return target[key]
-      }
-    })
+      })
+    }
   }
 
   await next()

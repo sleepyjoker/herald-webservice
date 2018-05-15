@@ -8,9 +8,9 @@ exports.route = {
   * @apiParam date     查询日期，格式 yyyy-M-d，不填为当日流水（带日期不能查当日流水）
   * @apiParam page     页码，不填为首页
   **/
-  async get() {
+  async get({ date = '', page = 1 }) {
     // 懒缓存 1 分钟
-    return await this.userCache('1m+', async () => {
+    return await this.userCache('10m+', async () => {
       await this.useAuthCookie()
       // 带着统一身份认证 Cookie 获取一卡通中心 Cookie；带着一卡通中心 Cookie 抓取一卡通页面
       await this.get('http://allinonecard.seu.edu.cn/ecard/dongnanportalHome.action')
@@ -57,10 +57,6 @@ exports.route = {
 
       // 接口设计规范，能转换为数字/bool的数据尽量转换，不要都用字符串
       info.balance = parseFloat(balance.replace(/,/g, ''))
-
-      // 一卡通
-      let date = this.params.date || '' // 格式 yyyy-M-d
-      let page = this.params.page || 1
 
       // 当天流水，直接查询
       if (date === '') {
@@ -112,12 +108,11 @@ exports.route = {
         // 接口设计规范，一定是数字的字段尽量转成数字；表示日期时间的字段转成毫秒时间戳
         if (cells.length >= 10) rows.push({
           id: parseInt(cells[7]),
-          desc: cells[4] || cells[3], // 地点或者交易性质
-          time: new Date(cells[0]).getTime(),
+          desc: cells[4] || cells[3].replace(/扣款/g, '') || cells[9].replace(/^[\d-]+/, ''), // 地点或者交易性质
+          time: +moment(cells[0]),
           amount: parseFloat(cells[5].replace(/,/g, '')),
           balance: parseFloat(cells[6].replace(/,/g, '')),
-          state: cells[8],
-          comment: cells[9]
+          state: cells[8]
         })
       })
 
@@ -136,8 +131,7 @@ exports.route = {
   * @apiParam amount     充值金额，浮点数兼容
   * @apiParam eacc       为1时充值到电子钱包
   **/
-  async put() {
-    let { cardnum, password, amount, eacc } = this.params
+  async put({ cardnum, password, amount, eacc }) {
     cardnum || ({ cardnum } = this.user)
 
     let res = await this.post('http://58.192.115.47:8088/wechat-web/login/dologin.html', {

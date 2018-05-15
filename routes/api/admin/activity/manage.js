@@ -2,14 +2,11 @@ const db = require('../../../../database/publicity')
 const admindb = require('../../../../database/admin')
 
 exports.route = {
-  async get () {
-    if (!this.admin.publicity) {
+  async get ({ page = 1, pagesize = 10 }) {
+    if (!this.admin || !this.admin.publicity) {
       throw 403
     }
-    let { page = 1, pagesize = 10 } = this.params
-    return await Promise.all((await db.activity.find())
-      .sort((a, b) => !a.admittedBy ? -1 : (!b.admittedBy ? 1 : b.startTime - a.startTime))
-      .slice((page - 1) * pagesize, page * pagesize)
+    return await Promise.all((await db.activity.find({}, pagesize, (page - 1) * pagesize, 'startTime-'))
       .map(async k => {
         let record = await admindb.admin.find({ cardnum: k.committedBy }, 1)
         k.committedByName = record ? record.name : k.committedBy
@@ -17,37 +14,36 @@ exports.route = {
           record = await admindb.admin.find({ cardnum: k.admittedBy }, 1)
           k.admittedByName = record ? record.name : k.admittedBy
         }
+        k.clicks = await db.activityClick.count({ aid: k.aid })
         return k
       }))
   },
-  async post () {
-    if (!this.admin.publicity) {
+  async post ({ activity }) {
+    if (!this.admin || !this.admin.publicity) {
       throw 403
     }
     let { cardnum } = this.user
-    let { activity } = this.params
     activity.committedBy = cardnum
     activity.admittedBy = ''
     await db.activity.insert(activity)
     return 'OK'
   },
-  async put () {
-    if (!this.admin.publicity) {
+  async put ({ activity }) {
+    if (!this.admin || !this.admin.publicity) {
       throw 403
     }
-    let { activity } = this.params
     let { cardnum } = this.user
     activity.admittedBy = cardnum
     await db.activity.update({ aid: activity.aid }, activity)
     return 'OK'
   },
-  async delete () {
-    if (!this.admin.publicity) {
+  async delete ({ aid }) {
+    if (!this.admin || !this.admin.publicity) {
       throw 403
     }
-    let { aid } = this.params
     let { cardnum } = this.user
     await db.activity.remove({ aid })
+    await db.activityClick.remove({ aid })
     return 'OK'
   }
 }

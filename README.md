@@ -2,57 +2,6 @@
 
 小猴偷米 2018 WebService3 后端试验品，使用 Node.js + Koa 构建。
 
-## 开发进度
-
-1. **中间件和支撑框架**
-
-  - [x] redis 缓存数据库 @rikumi
-  - [x] 身份认证和隐私加密 @rikumi
-  - [x] 通用网络请求中间件 @rikumi
-  - [x] 日志输出和测试终端 @rikumi
-  - [x] 后台管理员权限系统 @rikumi
-  - [x] CNN验证码识别系统 @狼剩子
-  - [x] 分布式硬件爬虫系统 @狼剩子
-  - [x] slack集成中间件 @狼剩子
-  - [x] 两种不同风格的 ORM @rikumi @Vigilans-Yea
-  - [x] 接口调用统计中间件 @rikumi
-  - [x] 接口互解释中间件 @rikumi
-  - [ ] 第三方授权平台
-
-2. **继承自 WebService2**
-
-  - [x] 一卡通（状态 / 当日 / 历史）
-  - [x] 课表 @rikumi
-  - [x] 跑操次数 @rikumi @tusooa
-  - [x] 空教室 @Vigilans-Yea
-  - [x] 跑操、体测 @rikumi
-  - [x] 物理实验 @tusooa
-  - [x] 考试安排 @sleepyjoker
-  - [x] 成绩 GPA @tusooa
-  - [x] SRTP @imfinethanks
-  - [x] 人文讲座 @sleepyjoker
-  - [x] 图书馆 @sleepyjoker
-  - [x] 学校通知 @tusooa @MediosZ @rikumi
-  - [x] 场馆预约 @Higuoxing @tusooa
-  - [x] 实时班车 @rikumi
-
-3. **继承自 AppService**
-
-  - [x] 七牛上传 @rikumi
-  - [x] 一卡通充值 @rikumi
-  - [x] 系统通知发布系统 @rikumi
-  - [x] 广告自助发布审核系统 @rikumi
-  - [x] 完整的 Web 管理后台 @rikumi
-  - [ ] 用户行为分析统计接口
-
-4. **新功能提案**
-
-  - [ ] 一卡通自助服务（挂失解挂等）
-  - [x] 网络中心自助服务（开通续费）@rikumi
-  - [ ] 食堂菜品数据库（权益）施工中
-  - [ ] 通用抢票、选座系统（研会）
-  - [ ] ……（欢迎补充）
-
 ## 使用说明
 
 ### 部署说明
@@ -66,6 +15,12 @@ $ redis-cli
 127.0.0.1:6379> config set maxmemory 1GB
 127.0.0.1:6379> config set maxmemory-policy allkeys-lru
 ```
+
+## 接口使用说明
+
+### 接口互解释文档
+
+点击 https://myseu.cn/ws3/api/ 可获得简明的接口文档。
 
 ### 返回格式
 
@@ -96,15 +51,15 @@ $ redis-cli
 用户登录时，需要向后端发送登录请求：
 
 ```bash
-curl -X POST http://localhost:3000/auth -d cardnum=一卡通号 -d password=统一身份认证密码 platform=平台标识符
+curl -X POST http://myseu.cn/ws3/auth -d cardnum=一卡通号 -d password=统一身份认证密码 platform=平台标识符
 ```
 
-其中，**平台标识符** 为一个字符串，推荐格式为小写字母和短横线的组合，例如 `android`/`ios`/`web` 等。
+其中，**平台标识符** 为一个字符串，推荐格式为小写字母和短横线的组合，例如 `android`/`ios`/`react-native` 等。
 
-后端收到登录请求，经过验证后，将返回一个64字节的字符串（`token`），作为当前用户的登录凭证。为了隐私安全，此登录凭证一旦发出将被后端丢弃。前端需要保存此凭证，并使用此凭证作为 HTTP Header 进行后续请求：
+后端收到登录请求，经过验证后，将返回一个16进制字符串（`token`），作为当前用户的登录凭证。为了隐私安全，此登录凭证的明文形式一旦发出将被后端丢弃，后端保留**用 `token` 加密的密文用户密码**和**用用户密码加密的密文 `token`**，这保证了系统只能在用户提供了密码或 `token` 之一的情况下解密用户数据，我们称之为**交叉加密**。前端需要保存此凭证，并使用此凭证作为 HTTP Header 进行后续请求：
 
 ```bash
-curl -X GET http://localhost:3000/api/card -H token:xxxxxxxx
+curl -X GET http://myseu.cn/ws3/api/card -H token:xxxxxxxx
 ```
 
 > 务必注意，使用 urlencoded 格式 (`-d`) 书写 POST 参数时，键与值之间用 `=` 分隔；书写 HTTP Header (`-H`) 时，键与值之间用 `:` 分隔。这是 HTTP 报文标准规定的。
@@ -113,9 +68,15 @@ curl -X GET http://localhost:3000/api/card -H token:xxxxxxxx
 
 ### 过期机制
 
-由于后端数据库实行完全加密，密钥一旦发放给客户端即被丢弃，因此 WebService3 不可能像以前那样在用户多处登录时生成相同的密钥，这就难免导致数据库膨胀速度加快。因此，我们定义了更严格的过期机制，超过一定时间未调用接口的用户自动过期。该过期时间（天数）在 `config.yml` 中可配置，推荐的时间是 2~3 个月。
+为了减轻数据库膨胀，超过一定时间未调用接口的用户将会自动过期。该过期时间（天数）在 `config.yml` 中可配置，推荐的时间是 2~3 个月。用户身份过期后，token 的行为将与未登录状态一致，即对于任何需要用户身份的路由均会返回 401。客户端应当随时检测 401 错误，并在出现 401 错误时立即要求用户重新登录。
 
-用户身份过期后，token 的行为将与未登录状态一致，即对于任何需要用户身份的路由均会返回 401。客户端应当随时检测 401 错误，并在出现 401 错误时立即要求用户重新登录。
+### 点击量统计
+
+> 传统的 Web 中，服务器在代替前端跳转到目标页面的过程中对用户点击行为进行记录，用于对点击量进行统计，这要求我们在用户的浏览器中直接请求后端路由；如果需要在统计过程中对点击量进行去重，还需要我们使用传统的 Cookie 机制…… 这是我们在前后端分离的大趋势下所不能容忍的。严格的前后端分离模式下，后端不能代替前端做任何决定，包括执行跳转。因此，我们定义了专门用于前端主动上报用户点击行为的接口，并要求前端只有经过上报才能得到目标地址。
+
+用户点击轮播图或活动时，前端需要（与普通接口一样带 token）调用对应的上报接口（轮播图为 `PUT /api/banner`，参数为对应的 `bid`；活动为 `PUT /api/activity`，参数为对应的 `aid`），得到目标地址，并主动展示目标页面，而不是由后端代替前端进行跳转操作。
+
+请只在用户主动点击时调用点击量上报接口，以保证点击量统计的准确性。
 
 ## 开发文档
 
@@ -156,7 +117,7 @@ exports.route = {
 
 ### 请求参数
 
-kf-router 提供了 `this` API ，代替 koa 中的 `ctx` ，另外经过 `koa-bodyparser` 处理，可以直接读取 `json`/`urlencoded`/`form` 格式的请求体。WebService3 将 `this.query` 和 `this.request.body` 进行了合并，可通过 `this.params` 统一获取。
+kf-router 提供了 `this` API ，代替 koa 中的 `ctx` ，另外经过 `koa-bodyparser` 处理，可以直接读取 `json`/`urlencoded`/`form` 格式的请求体。WebService3 将 `this.query` 和 `this.request.body` 进行了合并，可通过 `this.params` 统一获取，也可以直接从函数第一个参数中拿到。
 
 注意，本服务端使用较严格的参数解析，`GET` / `DELETE` 请求务必使用 URL 带参数，同样地，`POST` / `PUT` 请求只能解析 `body` 中的参数。
 
@@ -167,8 +128,7 @@ exports.route = {
     let { a, b } = this.params // 相当于 let a = this.params.a, b = this.params.b
     return parseInt(a) + parseInt(b)
   },
-  async post() {
-    let { c, d } = this.params
+  async post({ c, d }) {
     return parseInt(c) + parseInt(d)
   }
   // put, delete 也适用
